@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+strawberry-graphql
+yfinance
+pydantic
+scikit-learn
+pandas
+numpy
+websockets
+redis
+aioredis
+python-dotenv
+httpx
