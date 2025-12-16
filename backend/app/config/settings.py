@@ -21,12 +21,12 @@ class Settings(BaseSettings):
 
     # Market Symbols
     SYMBOLS: List[str] = Field(
-        default=["AAPL", "TSLA", "BTC-USD", "ETH-USD"],
+        default=["AAPL", "TSLA", "BTC-USD", "ETH-USD", "NVDA"],
         description="Default symbols to track"
     )
 
     # Fetching Intervals (seconds)
-    FETCH_INTERVAL: int = Field(15, description="Seconds between live price fetches (free tier safe)")
+    FETCH_INTERVAL: int = Field(120, description="Seconds between live price fetches (free tier safe)")
     PREDICT_INTERVAL: int = Field(10, description="Seconds between AI predictions")
     ALERT_INTERVAL: int = Field(15, description="Seconds between alert checks (match fetch interval)")
 

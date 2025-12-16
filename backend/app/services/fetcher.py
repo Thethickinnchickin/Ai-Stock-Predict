@@ -1,64 +1,64 @@
 import asyncio
+from typing import Tuple
 import httpx
+import yfinance as yf
 from ..utils.logger import log
-from .price_cache import PriceCache
+from .price_cache import price_cache
 from ..config.settings import settings
 
 logger = log
-price_cache = PriceCache()  # shared cache instance
 
 class PriceFetcher:
     def __init__(self):
         self.api_key = settings.POLYGON_API_KEY
-        if not self.api_key:
-            logger.error("POLYGON_API_KEY not set. Live price fetch will fail.")
-        self.stock_base_url = "https://api.polygon.io/v2/aggs/ticker/"
+        self.base = "https://api.polygon.io/v2/aggs/ticker/"
 
-    async def fetch_price(self, symbol: str) -> float:
-        """
-        Fetch the most recent price.
-        Free-tier: works only for US stocks.
-        """
-        if "-" in symbol:  # simple check for crypto symbols
-            logger.warning(f"Skipping crypto {symbol} — free-tier Polygon cannot fetch real-time.")
-            return None
-
-        url = f"{self.stock_base_url}{symbol}/prev?apiKey={self.api_key}"
-
+    async def fetch_price_and_volume(self, symbol: str) -> Tuple[float, float]:
+        if "-" in symbol:
+            return None, None
+        url = f"{self.base}{symbol}/prev?apiKey={self.api_key}"
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.get(url, timeout=5)
-                response.raise_for_status()
-                data = response.json()
-                return float(data["results"][0]["c"])  # previous close
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429:
-                    logger.warning(f"Rate limit reached for {symbol}. Skipping...")
-                else:
-                    logger.error(f"Error fetching price for {symbol}: {e}")
+                r = await client.get(url, timeout=5)
+                r.raise_for_status()
+                d = r.json()["results"][0]
+                return float(d["c"]), float(d["v"])
             except Exception as e:
-                logger.error(f"Unexpected error for {symbol}: {e}")
-        return None
+                logger.error(f"Live fetch failed {symbol}: {e}")
+                return None, None
+
+    async def preload_daily_history(self, symbol: str, period="1y"):
+        data = yf.download(
+            symbol,
+            period=period,
+            interval="1d",
+            auto_adjust=True,
+            progress=False,
+            group_by="column",
+        )
+
+        if data.empty:
+            logger.warning(f"No daily history for {symbol}")
+            return
+
+        close = data["Close"].ffill().squeeze().tolist()
+        volume = data["Volume"].ffill().squeeze().tolist()
+        dates = data.index.strftime("%Y-%m-%d").tolist()
 
 
-# -------------------------------
-# Background price fetching loop
-# -------------------------------
+        await price_cache.save_daily_history(symbol, close, volume, dates)
+        logger.info(f"📦 Preloaded {len(close)} daily candles for {symbol}")
+
 async def fetch_live_prices_loop():
-    """
-    Continuously fetches prices for a set of symbols and stores them in Redis.
-    """
     fetcher = PriceFetcher()
-    symbols = settings.SYMBOLS
-
     while True:
         try:
-            for symbol in symbols:
-                price = await fetcher.fetch_price(symbol)
+            for symbol in settings.SYMBOLS:
+                price, volume = await fetcher.fetch_price_and_volume(symbol)
                 if price is not None:
-                    await price_cache.save_price(symbol, price)
-                    logger.info(f"Saved {symbol}: {price} to Redis")
+                    await price_cache.save_live_price(symbol, price, volume)
+                    logger.info(f"LIVE {symbol}: {price} vol={volume}")
             await asyncio.sleep(settings.FETCH_INTERVAL)
         except Exception as e:
-            logger.error(f"Error in fetch_live_prices_loop: {e}")
+            logger.error(f"fetch_live_prices_loop error: {e}")
             await asyncio.sleep(5)

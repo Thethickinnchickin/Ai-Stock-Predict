@@ -1,28 +1,20 @@
-# app/main.py
-
 import asyncio
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from strawberry.fastapi import GraphQLRouter
 from pydantic import BaseModel
+import matplotlib.pyplot as plt
+import io
+from fastapi.responses import StreamingResponse
+import pandas as pd
 
 from .services.price_cache import price_cache
-from .services.prediction_service import prediction_service
 from app.graphql.schema import schema
 from app.tasks.runner import start_background_tasks
-from app.models.model_store import model_store
 from app.models.predictor import get_predictor
 
+app = FastAPI(title="AI Stock Predictive Backend", description="Real-time GraphQL + WebSocket backend", version="1.0.0")
 
-app = FastAPI(
-    title="AI Stock Predictive Backend",
-    description="Real-time GraphQL + WebSocket backend for stock/crypto predictions.",
-    version="1.0.0",
-)
-
-# ---------------------------
-# CORS
-# ---------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,157 +23,89 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------------
-# GraphQL
-# ---------------------------
 graphql_app = GraphQLRouter(schema)
 app.include_router(graphql_app, prefix="/graphql")
 
-# ---------------------------
-# Background tasks
-# ---------------------------
 @app.on_event("startup")
 async def on_startup():
-    # Starts ALL background loops (fetcher, trainer, alerts)
     asyncio.create_task(start_background_tasks())
     print("🚀 Background tasks started")
-
-# ---------------------------
-# Health check
-# ---------------------------
-@app.get("/")
-async def root():
-    return {
-        "status": "ok",
-        "message": "AI Stock Backend Running",
-        "graphql": "/graphql",
-    }
-
-# ---------------------------
-# API: Latest prices
-# ---------------------------
-@app.get("/api/prices")
-async def get_prices():
-    await price_cache.connect()
-    symbols = await price_cache.get_tracked_symbols()
-    data = {}
-
-    for symbol in symbols:
-        price = await price_cache.get_price(symbol)
-        if price is not None:
-            data[symbol] = price
-
-    return data
-
-# ---------------------------
-# API: Latest predictions
-# ---------------------------
-@app.get("/api/predictions")
-async def get_predictions():
-    await price_cache.connect()
-    symbols = await price_cache.get_tracked_symbols()
-    data = {}
-
-    for symbol in symbols:
-        pred = await price_cache.get_prediction(symbol)
-        if pred is not None:
-            data[symbol] = pred
-
-    return data
-
-# ======================================================
-# 🚀 PREDICTION ROUTES
-# ======================================================
 
 class PredictRequest(BaseModel):
     symbol: str
 
-# ---------------------------
-# POST /predict — run immediate prediction
-# ---------------------------
 @app.post("/predict")
 async def predict_stock(body: PredictRequest):
     symbol = body.symbol.upper()
     await price_cache.connect()
+    prices = await price_cache.get_daily_prices(symbol)
+    volumes = await price_cache.get_daily_volumes(symbol)
 
-    try:
-        prediction = await prediction_service.run_prediction(symbol)
-
-        if prediction is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"No history for {symbol}, cannot predict"
-            )
-
-        await price_cache.save_prediction(symbol, prediction)
-        return prediction
-
-    except Exception as e:
-        print(f"[ERROR] /predict failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ---------------------------
-# GET /recent — last 10 predictions
-# ---------------------------
-@app.get("/recent")
-async def get_recent_predictions():
-    await price_cache.connect()
-    history = await price_cache.get_recent_predictions(limit=10)
-    return history
-
-# ---------------------------
-# GET /alerts — active alerts
-# ---------------------------
-@app.get("/alerts")
-async def get_alerts():
-    await price_cache.connect()
-    try:
-        alerts = await price_cache.get_alerts()
-        return alerts or []
-    except Exception as e:
-        print("ERROR reading alerts:", e)
-        return []
-
-# ======================================================
-# 📈 PROBABILITY ROUTE
-# ======================================================
-
-class ProbabilityRequest(BaseModel):
-    symbol: str           # Stock symbol, e.g., "AAPL"
-    target_price: float   # The price the user wants to check probability for
-    days_ahead: int = 5   # How many days into the future to simulate
-    simulations: int = 100
-    
-@app.post("/predict/probability")
-async def predict_probability(req: ProbabilityRequest):
-    symbol = req.symbol.upper()
-    await price_cache.connect()
-
-    history = await price_cache.get_history(symbol)
-    if not history:
+    if not prices:
         raise HTTPException(status_code=400, detail=f"No history for {symbol}")
 
-    model = model_store.get(symbol)
-    if not model:
-        # Auto-create & train
-        model = get_predictor("lstm")
-        model.train(history)
-        model_store.set(symbol, model)
+    model = get_predictor("xgb")
+    model.train(prices, volumes)
+    predicted = model.predict(prices, volumes, steps=10)
+    high, low = model.predict_high_low(prices, volumes, steps=10)
 
-    if not hasattr(model, "probability_target"):
-        raise HTTPException(status_code=400, detail="Probability not implemented for this model type")
+    prediction = {"predicted": predicted, "high": high, "low": low}
+    await price_cache.save_prediction(symbol, prediction)
+    return prediction
 
-    prob = model.probability_target(
-        history=history,
-        target_price=req.target_price,
-        days_ahead=req.days_ahead,
-        simulations=req.simulations,
-        noise_std=1.0,
+@app.get("/predict/plot/{symbol}")
+async def plot_predictions(symbol: str):
+    symbol = symbol.upper()
+    await price_cache.connect()
+
+    prices, volumes, dates = await price_cache.get_daily_history(symbol)
+    if not prices or not volumes or not dates:
+        raise HTTPException(status_code=400, detail=f"No daily data loaded for {symbol}")
+
+    model = get_predictor("xgb")
+    model.train(prices, volumes)
+
+    STEPS = 100  # <-- make this whatever horizon you want
+    predicted = model.predict(prices, volumes, steps=STEPS)
+    high, low = model.predict_high_low(prices, volumes, steps=STEPS)
+
+    plt.figure(figsize=(12, 6))
+
+    # --- Convert dates ---
+    dates_dt = pd.to_datetime(dates)
+
+    # --- Plot actual ---
+    plt.plot(dates_dt, prices, label="Actual")
+
+    # --- Future dates ---
+    last_date = dates_dt[-1]
+    future_dates = pd.date_range(
+        start=last_date + pd.Timedelta(days=1),
+        periods=len(predicted),
+        freq="D",
     )
 
-    return {
-        "symbol": symbol,
-        "target_price": req.target_price,
-        "days_ahead": req.days_ahead,
-        "probability": round(float(prob), 4),
-    }
+    # --- Plot prediction ---
+    plt.plot(future_dates, predicted, "--", label="Predicted")
+    plt.fill_between(future_dates, high, low, alpha=0.3, label="High / Low")
+
+    # =====================================================
+    # ✅ THIS IS WHERE #4 GOES (date labels every 7 days)
+    # =====================================================
+    all_dates = pd.to_datetime(
+        list(dates_dt) + list(future_dates)
+    )
+
+    tick_dates = all_dates[::7]
+    plt.xticks(tick_dates, tick_dates.strftime("%Y-%m-%d"), rotation=45)
+    # =====================================================
+
+    plt.legend()
+    plt.grid(True)
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight")
+    plt.close()
+    buf.seek(0)
+
+    return StreamingResponse(buf, media_type="image/png")
