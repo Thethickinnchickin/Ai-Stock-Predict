@@ -1,43 +1,65 @@
-# graphql/queries.py
-
 import strawberry
 from typing import List
-from datetime import datetime
-
-from ..services.price_cache import PriceCache
-from ..config.settings import settings
-
-price_cache = PriceCache()
-
+import pandas as pd
+from app.services.price_cache import price_cache
+from app.models.predictor import predictor
 
 @strawberry.type
-class PricePoint:
-    symbol: str
-    price: float
-    timestamp: datetime
+class PriceSeries:
+    dates: List[str]
+    prices: List[float]
 
+@strawberry.type
+class PredictedSeries:
+    dates: List[str]
+    prices: List[float]
+    high: List[float]
+    low: List[float]
+
+@strawberry.type
+class Prediction:
+    actual: PriceSeries
+    predicted: PredictedSeries
 
 @strawberry.type
 class Query:
     @strawberry.field
-    async def current_price(self, symbol: str) -> PricePoint | None:
-        price = await price_cache.get_last_price(symbol)
-        if not price:
-            return None
-        return PricePoint(symbol=symbol, price=price["price"], timestamp=price["timestamp"])
+    async def predict_stock(self, symbol: str) -> Prediction:
+        symbol = symbol.upper()
 
-    @strawberry.field
-    async def price_history(self, symbol: str, limit: int = 100) -> List[PricePoint]:
-        history = await price_cache.get_price_history(symbol, limit)
-        return [
-            PricePoint(
-                symbol=symbol,
-                price=dp["price"],
-                timestamp=dp["timestamp"],
+        # Ensure price_cache is connected
+        await price_cache.connect()
+
+        prices, volumes, dates = await price_cache.get_daily_history(symbol)
+        if not prices or not volumes or not dates:
+            raise ValueError("No daily data loaded")
+
+        DISPLAY_WINDOW = 7
+        STEPS = 5
+
+        if len(prices) < predictor.look_back:
+            raise ValueError(f"Not enough data for prediction (need {predictor.look_back} days)")
+
+        # Predict
+        predicted = predictor.predict(prices, volumes, steps=STEPS)
+        high, low = predictor.predict_high_low(prices, volumes, steps=STEPS)
+
+        display_prices = prices[-DISPLAY_WINDOW:]
+        display_dates = dates[-DISPLAY_WINDOW:]
+
+        last_date = pd.to_datetime(display_dates[-1])
+        future_dates = pd.date_range(
+            start=last_date + pd.Timedelta(days=1),
+            periods=len(predicted),
+            freq="D"
+        )
+
+        return Prediction(
+            actual=PriceSeries(dates=display_dates, prices=display_prices),
+            predicted=PredictedSeries(
+                dates=future_dates.strftime("%Y-%m-%d").tolist(),
+                prices=predicted,
+                high=high,
+                low=low
             )
-            for dp in history
-        ]
-
-    @strawberry.field
-    def tracked_symbols(self) -> List[str]:
-        return settings.SYMBOLS
+        )

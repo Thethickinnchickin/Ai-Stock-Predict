@@ -27,7 +27,7 @@ class PriceFetcher:
                 logger.error(f"Live fetch failed {symbol}: {e}")
                 return None, None
 
-    async def preload_daily_history(self, symbol: str, period="1y"):
+    async def preload_daily_history(self, symbol: str, period="5y"):
         data = yf.download(
             symbol,
             period=period,
@@ -44,7 +44,6 @@ class PriceFetcher:
         close = data["Close"].ffill().squeeze().tolist()
         volume = data["Volume"].ffill().squeeze().tolist()
         dates = data.index.strftime("%Y-%m-%d").tolist()
-
 
         await price_cache.save_daily_history(symbol, close, volume, dates)
         logger.info(f"📦 Preloaded {len(close)} daily candles for {symbol}")

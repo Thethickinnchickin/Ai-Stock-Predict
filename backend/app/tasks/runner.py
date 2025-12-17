@@ -4,6 +4,8 @@ from ..services.fetcher import fetch_live_prices_loop, PriceFetcher
 from ..services.alert_service import alert_monitor_loop
 from ..services.prediction_service import PredictionService
 from ..config.settings import settings
+from ..models.predictor import predictor
+
 
 predictor_service = PredictionService(model_type="lstm")
 
@@ -25,12 +27,13 @@ async def preload_all_history():
 
 
 async def model_training_loop():
-    log.info("🧠 Model training loop started")
+    log.info("🧠 Global model training loop started")
 
+    global predictor
     while True:
         try:
-            await predictor_service.train_models()
-            await asyncio.sleep(300)
+            await predictor.train()
+            await asyncio.sleep(300)  # retrain every 5 minutes
         except asyncio.CancelledError:
             log.warn("⚠️ Model training loop cancelled.")
             break

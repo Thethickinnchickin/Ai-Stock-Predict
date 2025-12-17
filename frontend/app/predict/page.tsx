@@ -1,57 +1,136 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
+
+const Plot = dynamic(() => import("react-plotly.js"), {
+  ssr: false,
+});
 
 const STOCKS = ["AAPL", "TSLA", "NVDA"];
 
-const PredictPage = () => {
-  const [symbol, setSymbol] = useState<string | null>(null);
+type PriceSeries = {
+  dates: string[];
+  prices: number[];
+};
 
-  const imgUrl = symbol
-    ? `http://localhost:8000/predict/plot/${symbol}`
-    : null;
+type PredictedSeries = {
+  dates: string[];
+  prices: number[];
+  high: number[];
+  low: number[];
+};
+
+type PredictionResponse = {
+  actual: PriceSeries;
+  predicted: PredictedSeries;
+};
+
+export default function PredictPage() {
+  const [symbol, setSymbol] = useState<string>("");
+  const [data, setData] = useState<PredictionResponse | null>(null);
+
+  useEffect(() => {
+    if (!symbol) return;
+
+    const query = `
+      query StockPrediction($symbol: String!) {
+        predictStock(symbol: $symbol) {
+          actual {
+            dates
+            prices
+          }
+          predicted {
+            dates
+            prices
+            high
+            low
+          }
+        }
+      }
+    `;
+
+    fetch("http://localhost:8000/graphql", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query,
+        variables: { symbol },
+      }),
+    })
+      .then(res => res.json())
+      .then(resData => {
+        if (resData.errors) throw new Error(resData.errors[0].message);
+        setData(resData.data.predictStock);
+      })
+      .catch(err => console.error(err));
+  }, [symbol]);
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-b from-gray-900 to-gray-800 text-white p-6">
-      <h1 className="text-4xl font-extrabold mb-6 tracking-tight text-yellow-400">
+    <div className="min-h-screen bg-gray-900 text-white p-6">
+      <h1 className="text-3xl mb-6 text-yellow-400">
         Stock Prediction Dashboard
       </h1>
 
-      {/* Dropdown */}
-      <div className="mb-8">
-        <select
-          value={symbol || ""}
-          onChange={(e) => setSymbol(e.target.value)}
-          className="bg-gray-700 text-white px-4 py-2 rounded-lg shadow-lg focus:outline-none focus:ring-2 focus:ring-yellow-400 transition"
-        >
-          <option value="" disabled>
-            Select a stock
-          </option>
-          {STOCKS.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-      </div>
+      <select
+        className="bg-gray-700 px-4 py-2 rounded mb-6"
+        value={symbol}
+        onChange={(e) => setSymbol(e.target.value)}
+      >
+        <option value="" disabled>Select stock</option>
+        {STOCKS.map(s => (
+          <option key={s} value={s}>{s}</option>
+        ))}
+      </select>
 
-      {/* Chart */}
-      {symbol && imgUrl ? (
-        <div className="w-full max-w-4xl bg-gray-900 rounded-2xl shadow-2xl p-4">
-          <h2 className="text-xl font-semibold mb-2 text-center text-yellow-300">
-            {symbol} — Prediction vs Actual
-          </h2>
-          <img
-            src={imgUrl}
-            alt={`${symbol} prediction chart`}
-            className="w-full h-auto rounded-xl border border-gray-700 shadow-md"
-          />
-        </div>
-      ) : (
-        <p className="text-gray-300 text-lg mt-4">Please select a stock to see the chart.</p>
+      {data && (
+        <Plot
+          data={[
+            {
+              x: data.actual.dates,
+              y: data.actual.prices,
+              type: "scatter",
+              mode: "lines",
+              name: "Actual",
+            },
+            {
+              x: data.predicted.dates,
+              y: data.predicted.prices,
+              type: "scatter",
+              mode: "lines",
+              name: "Predicted",
+              line: { dash: "dash" },
+            },
+            {
+              x: data.predicted.dates,
+              y: data.predicted.high,
+              type: "scatter",
+              mode: "lines",
+              name: "High",
+              line: { width: 0 },
+              showlegend: false,
+            },
+            {
+              x: data.predicted.dates,
+              y: data.predicted.low,
+              type: "scatter",
+              mode: "lines",
+              fill: "tonexty",
+              name: "Low",
+              opacity: 0.3,
+            },
+          ]}
+          layout={{
+            paper_bgcolor: "#111827",
+            plot_bgcolor: "#111827",
+            font: { color: "white" },
+            hovermode: "x unified",
+            xaxis: { title: "Date" },
+            yaxis: { title: "Price ($)" },
+          }}
+          style={{ width: "100%", height: "500px" }}
+        />
       )}
     </div>
   );
-};
-
-export default PredictPage;
+}
