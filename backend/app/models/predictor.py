@@ -6,18 +6,30 @@ from sklearn.preprocessing import StandardScaler
 import yfinance as yf
 from ..services.price_cache import price_cache
 
-
+# -----------------------------
+# XGBoostPredictor: global AI model for all symbols
+# -----------------------------
 class XGBoostPredictor:
     """
-    XGBoost predictor trained across all symbols with market returns as a feature.
-    Predicts log returns, then converts to prices recursively.
+    Global XGBoost predictor trained across all symbols.
+    Features:
+      - Uses historical prices, volumes, and market returns
+      - Predicts log returns and converts them recursively to prices
+      - Provides high/low bands for predicted prices
     """
 
     def __init__(self, look_back=20, symbols=None, market_index="SPY"):
+        """
+        Args:
+            look_back (int): Number of past days to use for prediction
+            symbols (list[str]): List of symbols to train on
+            market_index (str): Market index used for global market returns
+        """
         self.look_back = look_back
         self.symbols = symbols or ["AAPL", "TSLA", "NVDA"]
         self.market_index = market_index
 
+        # XGBoost regression model
         self.model = XGBRegressor(
             n_estimators=300,
             max_depth=4,
@@ -27,14 +39,20 @@ class XGBoostPredictor:
             objective="reg:squarederror",
         )
 
+        # StandardScaler for normalizing input features
         self.scaler = StandardScaler()
         self.trained = False
         self.market_returns = None
 
-    # --------------------------
-    # Load market returns
-    # --------------------------
+    # -----------------------------
+    # Load daily market returns (e.g., SPY)
+    # -----------------------------
     def _get_market_returns(self):
+        """
+        Downloads market index data and computes daily log returns.
+        Returns:
+            np.ndarray: Array of log returns
+        """
         data = yf.download(
             self.market_index, period="1y", interval="1d",
             auto_adjust=True, progress=False
@@ -47,14 +65,19 @@ class XGBoostPredictor:
         if len(prices) < 2:
             raise ValueError(f"Not enough data to compute returns for {self.market_index}")
 
-        prices = prices.flatten()
         returns = np.diff(np.log(prices), prepend=np.log(prices[0]))
         return returns
 
-    # --------------------------
-    # Feature engineering per symbol
-    # --------------------------
+    # -----------------------------
+    # Feature engineering for a single symbol
+    # -----------------------------
     def _make_features_for_symbol(self, prices, volumes, market_returns):
+        """
+        Constructs feature matrix including:
+            - Prices, volumes, log returns
+            - Rolling mean and std
+            - Market index returns
+        """
         prices = np.array(prices, dtype=float)
         volumes = np.array(volumes, dtype=float)
         log_returns = np.diff(np.log(prices), prepend=np.log(prices[0]))
@@ -72,10 +95,15 @@ class XGBoostPredictor:
         ])
         return features
 
-    # --------------------------
-    # Build global dataset
-    # --------------------------
+    # -----------------------------
+    # Build global dataset from all symbols
+    # -----------------------------
     async def _build_global_dataset(self):
+        """
+        Creates feature and target arrays (X, y) for training.
+        Returns:
+            X_scaled (np.ndarray), y (np.ndarray)
+        """
         X_all, y_all = [], []
 
         try:
@@ -97,9 +125,11 @@ class XGBoostPredictor:
 
             features = self._make_features_for_symbol(prices, volumes, market_slice)
 
+            # Sliding window for supervised learning
             for i in range(self.look_back, len(prices)-1):
                 window = features[i-self.look_back:i].flatten()
                 X_all.append(window)
+                # Target: next day's log return
                 y_all.append(np.log(prices[i+1]/prices[i]))
 
         if not X_all:
@@ -110,22 +140,58 @@ class XGBoostPredictor:
         X_all_scaled = self.scaler.fit_transform(X_all)
         return X_all_scaled, y_all
 
-    # --------------------------
-    # Training
-    # --------------------------
+    # -----------------------------
+    # Train model
+    # -----------------------------
     async def train(self):
+        """
+        Trains the XGBoost model using the global dataset.
+        Uses walk-forward validation and prints validation MAE.
+        """
         X, y = await self._build_global_dataset()
         if len(X) == 0:
-            print("⚠️ Not enough data to train")
             return
-        self.model.fit(X, y)
-        self.trained = True
-        print(f"✅ XGBoost trained on {len(X)} samples across {len(self.symbols)} symbols")
 
-    # --------------------------
-    # Recursive prediction
-    # --------------------------
+        split = self._walk_forward_split(X, y)
+        if not split:
+            return
+
+        X_train, y_train, X_val, y_val = split
+
+        self.model.fit(X_train, y_train)
+        self.trained = True
+
+        preds = self.model.predict(X_val)
+        error = np.mean(np.abs(preds - y_val))
+        print(f"📊 Validation MAE (log-return): {error:.5f}")
+
+    # -----------------------------
+    # Walk-forward split for validation
+    # -----------------------------
+    def _walk_forward_split(self, X, y, val_size=200):
+        """
+        Splits data into training and validation sets.
+        Validation set is the last `val_size` samples.
+        """
+        if len(X) <= val_size:
+            return None
+
+        X_train = X[:-val_size]
+        y_train = y[:-val_size]
+        X_val = X[-val_size:]
+        y_val = y[-val_size:]
+
+        return X_train, y_train, X_val, y_val
+
+    # -----------------------------
+    # Recursive multi-step prediction
+    # -----------------------------
     def predict(self, prices, volumes=None, steps=10):
+        """
+        Predict next `steps` future prices recursively.
+        Returns:
+            list[float]: predicted prices
+        """
         if not self.trained or volumes is None:
             return []
 
@@ -152,24 +218,31 @@ class XGBoostPredictor:
             next_price = prices[-1] * np.exp(pred_ret)
             preds.append(round(next_price, 2))
 
+            # Append predicted price and carry last volume forward
             prices.append(next_price)
             volumes.append(volumes[-1])
 
         return preds
 
+    # -----------------------------
+    # Generate high/low price bands
+    # -----------------------------
     def predict_high_low(self, prices, volumes=None, steps=10):
+        """
+        Computes upper and lower bands for predicted prices for visualization.
+        """
         preds = self.predict(prices, volumes, steps)
         high = [p * (1 + 0.01 + i * 0.002) for i, p in enumerate(preds)]
         low = [p * (1 - 0.01 - i * 0.002) for i, p in enumerate(preds)]
         return high, low
 
 
-# --------------------------
+# -----------------------------
 # Factory function & global predictor
-# --------------------------
+# -----------------------------
 def get_predictor(model_type="xgb"):
     if model_type == "xgb":
         return XGBoostPredictor()
 
-# Global instance for the app
+# Global predictor instance used across the app
 predictor = get_predictor("xgb")

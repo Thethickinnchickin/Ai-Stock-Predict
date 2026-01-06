@@ -3,9 +3,7 @@
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 
-const Plot = dynamic(() => import("react-plotly.js"), {
-  ssr: false,
-});
+const Plot = dynamic(() => import("react-plotly.js"), { ssr: false });
 
 const STOCKS = ["AAPL", "TSLA", "NVDA"];
 
@@ -66,6 +64,23 @@ export default function PredictPage() {
       .catch(err => console.error(err));
   }, [symbol]);
 
+  // Merge last actual price with predicted for a continuous line
+  const getCombinedPrediction = () => {
+    if (!data) return null;
+
+    const lastActualDate = data.actual.dates[data.actual.dates.length - 1];
+    const lastActualPrice = data.actual.prices[data.actual.prices.length - 1];
+
+    return {
+      dates: [lastActualDate, ...data.predicted.dates],
+      prices: [lastActualPrice, ...data.predicted.prices],
+      high: [lastActualPrice, ...data.predicted.high],
+      low: [lastActualPrice, ...data.predicted.low],
+    };
+  };
+
+  const combinedPrediction = getCombinedPrediction();
+
   return (
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <h1 className="text-3xl mb-6 text-yellow-400">
@@ -83,7 +98,7 @@ export default function PredictPage() {
         ))}
       </select>
 
-      {data && (
+      {data && combinedPrediction && (
         <Plot
           data={[
             {
@@ -94,16 +109,16 @@ export default function PredictPage() {
               name: "Actual",
             },
             {
-              x: data.predicted.dates,
-              y: data.predicted.prices,
+              x: combinedPrediction.dates,
+              y: combinedPrediction.prices,
               type: "scatter",
               mode: "lines",
               name: "Predicted",
-              line: { dash: "dash" },
+              line: { dash: "dash", color: "yellow" },
             },
             {
-              x: data.predicted.dates,
-              y: data.predicted.high,
+              x: combinedPrediction.dates,
+              y: combinedPrediction.high,
               type: "scatter",
               mode: "lines",
               name: "High",
@@ -111,8 +126,8 @@ export default function PredictPage() {
               showlegend: false,
             },
             {
-              x: data.predicted.dates,
-              y: data.predicted.low,
+              x: combinedPrediction.dates,
+              y: combinedPrediction.low,
               type: "scatter",
               mode: "lines",
               fill: "tonexty",
