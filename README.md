@@ -1,6 +1,7 @@
 # AI Stock Predict
 
 [![CI](https://github.com/jerryreiley/Ai-Stock-Predict/actions/workflows/ci.yml/badge.svg)](https://github.com/jerryreiley/Ai-Stock-Predict/actions/workflows/ci.yml)
+[![Frontend Lint](https://github.com/jerryreiley/Ai-Stock-Predict/actions/workflows/ci.yml/badge.svg?job=frontend-lint)](https://github.com/jerryreiley/Ai-Stock-Predict/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/jerryreiley/Ai-Stock-Predict/branch/main/graph/badge.svg)](https://codecov.io/gh/jerryreiley/Ai-Stock-Predict)
 
 AI Stock Predict is a full-stack project that demonstrates how to build a
