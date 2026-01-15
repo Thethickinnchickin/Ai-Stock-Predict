@@ -6,6 +6,7 @@ pydantic
 scikit-learn
 pandas
 numpy
+xgboost
 websockets
 redis
 aioredis
