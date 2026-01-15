@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from datetime import datetime
 from app.models.predictor import predictor
@@ -30,6 +31,13 @@ async def main():
     )
     with open(log_path, "a", encoding="utf-8") as handle:
         handle.write(line)
+
+    feature_log_path = settings.FEATURE_IMPORTANCE_LOG_PATH
+    os.makedirs(os.path.dirname(feature_log_path), exist_ok=True)
+    features = predictor.get_feature_importances(top_k=settings.FEATURE_IMPORTANCE_TOP_K)
+    payload = {"timestamp": timestamp, "features": features}
+    with open(feature_log_path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload) + "\n")
 
 
 if __name__ == "__main__":

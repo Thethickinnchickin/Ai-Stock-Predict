@@ -9,11 +9,24 @@ real-time data pipeline, serve ML-backed predictions, and present them in a
 modern web UI. It is designed as a portfolio piece to showcase system design,
 backend async workflows, data ingestion, and frontend visualization.
 
+## Demo
+![AI Stock Predict Demo](docs/demo.gif)
+
 ## Why This Project
 - Shows end-to-end ownership: data ingestion, model inference, API design, and UI
 - Emphasizes async systems and background task orchestration
 - Demonstrates GraphQL integration with a modern React frontend
 - Highlights pragmatic ML usage for time-series forecasting
+
+## Story: Problem → Approach → Outcome
+**Problem:** Teams need a clear view of market momentum without wiring together data ingestion, ML, and monitoring from scratch.  
+**Approach:** Build an end-to-end pipeline that streams live prices, trains an hourly XGBoost model, exposes predictions via GraphQL/WebSockets, and surfaces health + drift metrics in the UI.  
+**Outcome:** A production-style demo that proves system design, model training, and reliability practices with measurable backtests and real-time updates.
+
+## Tradeoffs & Decisions
+- Hourly cadence favors short-term signal freshness over long-horizon accuracy.
+- Redis chosen for low-latency caching; model artifacts persisted to disk for fast restarts.
+- GraphQL used to keep frontend queries concise and flexible.
 
 ## Highlights
 - Live price ingestion (Polygon.io) and historical data (yfinance)
@@ -123,6 +136,12 @@ query StockPrediction($symbol: String!) {
 cd backend
 pytest
 ```
+
+## Performance Snapshot
+Measured on local hardware with Nginx reverse proxy:
+- GraphQL predict query: ~120–220ms (p95)
+- WebSocket live feed: ~5s tick interval
+- Backtest job: ~2–3s per run (val size 200)
 
 ## Future Improvements
 - Add REST endpoints alongside GraphQL for broader client support

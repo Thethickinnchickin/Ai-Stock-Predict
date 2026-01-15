@@ -1,3 +1,4 @@
+import json
 import os
 import strawberry
 from typing import List, Optional
@@ -6,6 +7,7 @@ from pandas.tseries.offsets import BDay
 from app.services.price_cache import price_cache
 from app.models.predictor import predictor
 from app.services.prediction_service import prediction_service
+from app.models.registry import model_registry
 from app.config.settings import settings
 
 # -----------------------------
@@ -62,6 +64,18 @@ class DriftMetrics:
     prior_mae: Optional[float]
     delta: Optional[float]
     status: str
+
+
+@strawberry.type
+class FeatureImportance:
+    name: str
+    importance: float
+
+
+@strawberry.type
+class FeatureImportanceSnapshot:
+    timestamp: str
+    features: List[FeatureImportance]
 
 
 def _parse_backtest_line(line: str) -> Optional[BacktestResult]:
@@ -242,3 +256,38 @@ class Query:
             delta=delta,
             status=status,
         )
+
+    @strawberry.field
+    async def feature_importances(self, top_k: int = 10) -> List[FeatureImportance]:
+        model = model_registry.get()
+        if not model:
+            return []
+        values = model.get_feature_importances(top_k=top_k)
+        return [FeatureImportance(**item) for item in values]
+
+    @strawberry.field
+    async def feature_importance_trend(self, limit: int = 30) -> List[FeatureImportanceSnapshot]:
+        path = settings.FEATURE_IMPORTANCE_LOG_PATH
+        if not os.path.exists(path):
+            return []
+
+        with open(path, "r", encoding="utf-8") as handle:
+            lines = [line for line in handle.readlines() if line.strip()]
+
+        snapshots: List[FeatureImportanceSnapshot] = []
+        for line in lines[-limit:]:
+            try:
+                payload = json.loads(line)
+                features = [
+                    FeatureImportance(**item) for item in payload.get("features", [])
+                ]
+                snapshots.append(
+                    FeatureImportanceSnapshot(
+                        timestamp=payload.get("timestamp", ""),
+                        features=features,
+                    )
+                )
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        return snapshots

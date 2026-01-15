@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
+
+const Plot = dynamic(() => import("react-plotly.js"), { ssr: false });
 
 const GRAPHQL_URL =
   typeof window !== "undefined"
@@ -29,17 +32,29 @@ type DriftMetrics = {
   status: string;
 };
 
+type FeatureImportance = {
+  name: string;
+  importance: number;
+};
+
+type FeatureImportanceSnapshot = {
+  timestamp: string;
+  features: FeatureImportance[];
+};
+
 export default function ModelReportPage() {
   const [results, setResults] = useState<BacktestResult[]>([]);
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [drift, setDrift] = useState<DriftMetrics | null>(null);
+  const [features, setFeatures] = useState<FeatureImportance[]>([]);
+  const [featureTrend, setFeatureTrend] = useState<FeatureImportanceSnapshot[]>([]);
 
   useEffect(() => {
     let isActive = true;
     const loadResults = async () => {
       try {
         const query = `
-          query BacktestResults($limit: Int!, $window: Int!) {
+          query BacktestResults($limit: Int!, $window: Int!, $topK: Int!, $trendLimit: Int!) {
             backtestResults(limit: $limit) {
               timestamp
               maeModel
@@ -55,19 +70,35 @@ export default function ModelReportPage() {
               delta
               status
             }
+            featureImportances(topK: $topK) {
+              name
+              importance
+            }
+            featureImportanceTrend(limit: $trendLimit) {
+              timestamp
+              features {
+                name
+                importance
+              }
+            }
           }
         `;
 
         const response = await fetch(GRAPHQL_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query, variables: { limit: 14, window: 5 } }),
+          body: JSON.stringify({
+            query,
+            variables: { limit: 14, window: 5, topK: 8, trendLimit: 20 },
+          }),
         });
 
         const payload = await response.json();
         if (!isActive || payload.errors) return;
         setResults(payload.data?.backtestResults ?? []);
         setDrift(payload.data?.driftMetrics ?? null);
+        setFeatures(payload.data?.featureImportances ?? []);
+        setFeatureTrend(payload.data?.featureImportanceTrend ?? []);
       } catch (error) {
         console.error("Failed to load backtest results", error);
       }
@@ -105,6 +136,22 @@ export default function ModelReportPage() {
       results.reduce((acc, entry) => acc + entry.maeModel, 0) / results.length
     );
   }, [results]);
+
+  const trendSeries = useMemo(() => {
+    if (!featureTrend.length) return [];
+    const latest = featureTrend[featureTrend.length - 1];
+    const names = latest.features.slice(0, 3).map((item) => item.name);
+    const timestamps = featureTrend.map((entry) => entry.timestamp);
+
+    return names.map((name) => ({
+      name,
+      x: timestamps,
+      y: featureTrend.map((entry) => {
+        const match = entry.features.find((item) => item.name === name);
+        return match ? match.importance : null;
+      }),
+    }));
+  }, [featureTrend]);
 
   return (
     <section className="space-y-10">
@@ -222,19 +269,60 @@ export default function ModelReportPage() {
           <p className="text-xs uppercase tracking-[0.3em] text-muted">Feature Set</p>
           <h2 className="mt-2 text-xl font-semibold">Key Inputs</h2>
           <div className="mt-6 grid gap-3 text-sm text-muted">
-            {[
-              "Hourly OHLC-derived signals",
-              "RSI, MACD, and rolling volatility",
-              "Volume z-score anomalies",
-              "Market context (SPY, QQQ, VIX)",
-              "Temporal features (hour, weekday)",
-            ].map((item) => (
-              <div key={item} className="panel-outline px-4 py-3">
-                {item}
-              </div>
-            ))}
+            {features.length === 0 ? (
+              <div className="panel-outline px-4 py-3">No importances available.</div>
+            ) : (
+              features.map((item) => (
+                <div key={item.name} className="panel-outline px-4 py-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-white">{item.name}</span>
+                    <span className="text-xs text-muted">{item.importance.toFixed(4)}</span>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
+      </div>
+
+      <div className="panel p-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-[0.3em] text-muted">Feature Drift</p>
+            <h2 className="mt-2 text-xl font-semibold">Top Feature Importance Trend</h2>
+          </div>
+          <span className="text-sm text-muted">
+            {featureTrend.length ? `${featureTrend.length} runs` : "No history"}
+          </span>
+        </div>
+
+        {trendSeries.length ? (
+          <div className="mt-6 panel-outline overflow-hidden p-4">
+            <Plot
+              data={trendSeries.map((series) => ({
+                x: series.x,
+                y: series.y,
+                type: "scatter",
+                mode: "lines+markers",
+                name: series.name,
+              }))}
+              layout={{
+                paper_bgcolor: "rgba(0,0,0,0)",
+                plot_bgcolor: "rgba(0,0,0,0)",
+                font: { color: "#e6edf3" },
+                xaxis: { title: "Run", showgrid: false },
+                yaxis: { title: "Importance", gridcolor: "rgba(255,255,255,0.08)" },
+                margin: { l: 50, r: 20, t: 20, b: 40 },
+                showlegend: true,
+              }}
+              style={{ width: "100%", height: "360px" }}
+            />
+          </div>
+        ) : (
+          <div className="mt-6 panel-outline px-6 py-10 text-center text-muted">
+            No feature importance history logged yet.
+          </div>
+        )}
       </div>
     </section>
   );

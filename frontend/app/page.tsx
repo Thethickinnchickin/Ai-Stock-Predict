@@ -209,6 +209,10 @@ export default function Home() {
             </div>
           ))}
         </div>
+        <div className="panel-outline px-4 py-3 text-sm text-muted">
+          Live prices stream into Redis → hourly model retraining → GraphQL/WebSocket
+          predictions → Results + Status dashboards.
+        </div>
       </div>
 
       <div className="panel glow-ring p-6">

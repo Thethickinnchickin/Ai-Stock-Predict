@@ -3,8 +3,10 @@
 from typing import Callable, Dict
 import asyncio
 import numpy as np
+import httpx
 from ..utils.logger import log  # use the existing logger object
 from .price_cache import PriceCache
+from ..config.settings import settings
 
 logger = log  # optional alias
 price_cache = PriceCache()  # shared cache instance
@@ -25,8 +27,21 @@ class AlertService:
 
     async def dispatch_alert(self, message: dict):
         logger.info(f"Dispatching alert: {message}")
+        if settings.ALERT_WEBHOOK_URL:
+            await self.send_webhook(message)
         for sub, cb in self.subscribers.items():
             await cb(message)
+
+    async def send_webhook(self, message: dict):
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    settings.ALERT_WEBHOOK_URL,
+                    json=message,
+                    timeout=settings.ALERT_WEBHOOK_TIMEOUT,
+                )
+        except Exception as e:
+            logger.error(f"Webhook delivery failed: {e}")
 
     async def check_thresholds(self, symbol: str, price: float):
         if symbol in self.thresholds:
@@ -90,6 +105,32 @@ async def alert_monitor_loop():
                 history = await price_cache.get_history(symbol)
                 if history:
                     await alert_service.ai_anomaly_detection(symbol, history)
+
+                # Data freshness check (hourly data)
+                dates = await price_cache.get_hourly_dates(symbol, limit=48)
+                if dates:
+                    try:
+                        last = np.datetime64(dates[-1])
+                        age_seconds = (np.datetime64("now") - last) / np.timedelta64(1, "s")
+                        if age_seconds > settings.HOURLY_DATA_MAX_AGE_SECONDS:
+                            await alert_service.dispatch_alert({
+                                "type": "data_stale",
+                                "symbol": symbol,
+                                "age_seconds": float(age_seconds),
+                                "max_age_seconds": settings.HOURLY_DATA_MAX_AGE_SECONDS,
+                            })
+
+                        if len(dates) > 1:
+                            gaps = np.diff(np.array(dates, dtype="datetime64[m]"))
+                            max_gap_minutes = float(np.max(gaps) / np.timedelta64(1, "m"))
+                            if max_gap_minutes > 90:
+                                await alert_service.dispatch_alert({
+                                    "type": "data_gap",
+                                    "symbol": symbol,
+                                    "max_gap_minutes": max_gap_minutes,
+                                })
+                    except Exception as e:
+                        logger.error(f"Data freshness check failed for {symbol}: {e}")
 
             await asyncio.sleep(2)  # alert checking interval
         except Exception as e:

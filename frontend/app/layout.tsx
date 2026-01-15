@@ -52,6 +52,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <Link className="transition hover:text-white" href="/api-docs">API Docs</Link>
               </li>
               <li>
+                <Link className="transition hover:text-white" href="/status">Status</Link>
+              </li>
+              <li>
                 <Link className="transition hover:text-white" href="/about">About</Link>
               </li>
             </ul>

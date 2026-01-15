@@ -142,6 +142,43 @@ class XGBoostPredictor:
     def _calc_ema(self, prices, span):
         return pd.Series(prices).ewm(span=span, adjust=False).mean().values
 
+    def get_feature_importances(self, top_k=10):
+        if not self.trained:
+            return []
+        num_market = len(self.market_indices)
+        base_features = [
+            "price",
+            "volume",
+            "log_return",
+            "rolling_mean",
+            "rolling_std",
+            "rsi",
+            "macd",
+            "macd_signal",
+            "volume_z",
+            "hour_of_day",
+            "day_of_week",
+        ]
+        feature_names = base_features + [f"market_{sym}" for sym in self.market_indices]
+        num_features = len(feature_names)
+
+        importances = getattr(self.model, "feature_importances_", None)
+        if importances is None or len(importances) == 0:
+            return []
+
+        total_expected = self.look_back * num_features
+        if len(importances) != total_expected:
+            return []
+
+        reshaped = importances.reshape(self.look_back, num_features)
+        aggregated = reshaped.mean(axis=0)
+        ranked = sorted(
+            zip(feature_names, aggregated),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        return [{"name": name, "importance": float(score)} for name, score in ranked[:top_k]]
+
     # -----------------------------
     # Feature engineering for a single symbol
     # -----------------------------

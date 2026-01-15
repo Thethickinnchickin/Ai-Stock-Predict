@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from datetime import datetime, timedelta
 from ..utils.logger import log
@@ -110,6 +111,14 @@ async def nightly_backtest_loop():
 
             with open(log_path, "a", encoding="utf-8") as handle:
                 handle.write(line)
+
+            feature_log_path = settings.FEATURE_IMPORTANCE_LOG_PATH
+            os.makedirs(os.path.dirname(feature_log_path), exist_ok=True)
+            if results:
+                features = model.get_feature_importances(top_k=settings.FEATURE_IMPORTANCE_TOP_K)
+                payload = {"timestamp": timestamp, "features": features}
+                with open(feature_log_path, "a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(payload) + "\n")
         except Exception as e:
             log.error(f"Nightly backtest failed: {e}")
             await asyncio.sleep(300)

@@ -1,9 +1,12 @@
 import asyncio
 import json
 import os
+import time
+from collections import defaultdict, deque
 from datetime import datetime, timezone
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 from strawberry.fastapi import GraphQLRouter
 
 from .tasks.runner import start_background_tasks
@@ -14,6 +17,9 @@ from .services.price_cache import price_cache
 from .services.prediction_service import prediction_service
 from .models.predictor import predictor
 from .config.settings import settings
+from .utils.logger import log
+
+_START_TIME = time.time()
 
 # -----------------------------
 # Initialize FastAPI app
@@ -65,6 +71,31 @@ async def on_startup():
 # -----------------------------
 graphql_app = GraphQLRouter(schema)
 app.include_router(graphql_app, prefix="/graphql")
+
+_rate_buckets = defaultdict(deque)
+
+
+@app.middleware("http")
+async def rate_limit_and_log(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/ws"):
+        return await call_next(request)
+
+    ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    bucket = _rate_buckets[ip]
+    window = settings.RATE_LIMIT_WINDOW_SECONDS
+    while bucket and now - bucket[0] > window:
+        bucket.popleft()
+    if len(bucket) >= settings.RATE_LIMIT_MAX:
+        return JSONResponse({"detail": "Rate limit exceeded"}, status_code=429)
+    bucket.append(now)
+
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    log.info(f"{ip} {request.method} {path} {response.status_code} {duration_ms}ms")
+    return response
 
 
 @app.get("/health")
@@ -126,6 +157,46 @@ async def health():
         "symbols": symbols,
         "model": {"trained_at": model_trained_at},
         "backtest": {"last_run": backtest_last_run},
+    }
+
+
+@app.get("/status")
+async def status():
+    now = datetime.now(timezone.utc)
+    uptime_seconds = int(time.time() - _START_TIME)
+    symbols = []
+    for symbol in settings.SYMBOLS:
+        ts = await price_cache.get_live_timestamp(symbol)
+        age_seconds = None
+        if ts:
+            try:
+                dt = datetime.fromisoformat(ts)
+                age_seconds = int((now - dt).total_seconds())
+            except ValueError:
+                age_seconds = None
+        symbols.append(
+            {
+                "symbol": symbol,
+                "last_update": ts,
+                "age_seconds": age_seconds,
+            }
+        )
+
+    backtest_last_run = None
+    if os.path.exists(settings.BACKTEST_LOG_PATH):
+        try:
+            with open(settings.BACKTEST_LOG_PATH, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        backtest_last_run = line.split(" | ", 1)[0].strip()
+        except Exception:
+            backtest_last_run = None
+
+    return {
+        "uptime_seconds": uptime_seconds,
+        "server_time": now.isoformat(),
+        "backtest_last_run": backtest_last_run,
+        "symbols": symbols,
     }
 
 
