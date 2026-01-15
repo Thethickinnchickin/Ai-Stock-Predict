@@ -134,7 +134,10 @@ class XGBoostPredictor:
         loss = (-delta.clip(upper=0)).rolling(period).mean()
         rs = gain / loss.replace(0, np.nan)
         rsi = 100 - (100 / (1 + rs))
-        return rsi.fillna(50).values
+        no_movement = (gain == 0) & (loss == 0)
+        rsi = rsi.mask(no_movement, 50)
+        rsi = rsi.fillna(100)
+        return rsi.values
 
     def _calc_ema(self, prices, span):
         return pd.Series(prices).ewm(span=span, adjust=False).mean().values
