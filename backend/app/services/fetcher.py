@@ -21,6 +21,7 @@ class PriceFetcher:
     def __init__(self):
         # API key and base URL for Polygon.io
         self.api_key = settings.POLYGON_API_KEY
+        
         self.base = "https://api.polygon.io/v2/aggs/ticker/"
 
     # -----------------------------
@@ -36,6 +37,7 @@ class PriceFetcher:
         Returns:
             Tuple[float, float]: (price, volume) or (None, None) on failure
         """
+
         if "-" in symbol:  # Skip invalid symbols (e.g., options)
             return None, None
 
@@ -83,6 +85,33 @@ class PriceFetcher:
         # Save to Redis cache
         await price_cache.save_daily_history(symbol, close, volume, dates)
         logger.info(f"📦 Preloaded {len(close)} daily candles for {symbol}")
+
+    # -----------------------------
+    # Preload hourly history
+    # -----------------------------
+    async def preload_hourly_history(self, symbol: str, period="60d"):
+        """
+        Download historical hourly OHLCV data from Yahoo Finance and save to cache.
+        """
+        data = yf.download(
+            symbol,
+            period=period,
+            interval="60m",
+            auto_adjust=True,
+            progress=False,
+            group_by="column",
+        )
+
+        if data.empty:
+            logger.warning(f"No hourly history for {symbol}")
+            return
+
+        close = data["Close"].ffill().squeeze().tolist()
+        volume = data["Volume"].ffill().squeeze().tolist()
+        dates = data.index.strftime("%Y-%m-%d %H:%M").tolist()
+
+        await price_cache.save_hourly_history(symbol, close, volume, dates)
+        logger.info(f"📦 Preloaded {len(close)} hourly candles for {symbol}")
 
 
 # -----------------------------

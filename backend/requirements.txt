@@ -11,3 +11,4 @@ redis
 aioredis
 python-dotenv
 httpx
+joblib

@@ -13,13 +13,13 @@ class Mutation:
         symbol = symbol.upper()
         await price_cache.connect()
 
-        prices, volumes, dates = await price_cache.get_daily_history(symbol)
+        prices, volumes, dates = await price_cache.get_hourly_history(symbol)
         if not prices or not volumes or not dates:
-            raise HTTPException(status_code=400, detail=f"No daily data loaded for {symbol}")
+            raise HTTPException(status_code=400, detail=f"No hourly data loaded for {symbol}")
 
         STEPS = 5
-        predicted = predictor.predict(prices, volumes, steps=STEPS)
-        high, low = predictor.predict_high_low(prices, volumes, steps=STEPS)
+        predicted = predictor.predict(prices, volumes, steps=STEPS, dates=dates)
+        high, low = predictor.predict_high_low(prices, volumes, steps=STEPS, dates=dates)
 
         plt.figure(figsize=(12, 6))
         dates_dt = pd.to_datetime(dates)
@@ -27,9 +27,9 @@ class Mutation:
 
         last_date = dates_dt[-1]
         future_dates = pd.date_range(
-            start=last_date + pd.Timedelta(days=1),
+            start=last_date + pd.Timedelta(hours=1),
             periods=len(predicted),
-            freq="D",
+            freq="H",
         )
 
         plt.plot(future_dates, predicted, "--", label="Predicted")
@@ -37,7 +37,7 @@ class Mutation:
 
         all_dates = pd.to_datetime(list(dates_dt) + list(future_dates))
         tick_dates = all_dates[::7]
-        plt.xticks(tick_dates, tick_dates.strftime("%Y-%m-%d"), rotation=45)
+        plt.xticks(tick_dates, tick_dates.strftime("%Y-%m-%d %H:%M"), rotation=45)
 
         plt.legend()
         plt.grid(True)

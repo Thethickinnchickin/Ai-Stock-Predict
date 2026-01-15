@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 import redis.asyncio as aioredis
 from ..utils.logger import log
 
@@ -53,6 +54,10 @@ class PriceCache:
         """
         await self.connect()
         await self.redis.set(f"live:price:{symbol}", price)
+        await self.redis.set(
+            f"live:price_ts:{symbol}",
+            datetime.now(timezone.utc).isoformat(),
+        )
         await self.redis.lpush(f"live:price_history:{symbol}", price)
         await self.redis.ltrim(f"live:price_history:{symbol}", 0, 500)
 
@@ -67,6 +72,35 @@ class PriceCache:
         await self.connect()
         val = await self.redis.get(f"live:price:{symbol}")
         return float(val) if val else None
+
+    async def get_live_timestamp(self, symbol: str):
+        """Fetch the latest live price timestamp for a symbol."""
+        await self.connect()
+        return await self.redis.get(f"live:price_ts:{symbol}")
+
+    async def get_live_volume(self, symbol: str):
+        """Fetch the latest live volume for a symbol."""
+        await self.connect()
+        val = await self.redis.get(f"live:volume:{symbol}")
+        return float(val) if val else None
+
+    async def get_live_change_percent(self, symbol: str):
+        """
+        Compute percent change between the two most recent live prices.
+        Returns None if there is not enough history.
+        """
+        await self.connect()
+        prices = await self.redis.lrange(f"live:price_history:{symbol}", 0, 1)
+        if len(prices) < 2:
+            return None
+        try:
+            latest = float(prices[0])
+            previous = float(prices[1])
+        except (TypeError, ValueError):
+            return None
+        if previous == 0:
+            return None
+        return ((latest - previous) / previous) * 100
 
     # Alias for backward compatibility
     async def get_price(self, symbol: str) -> float | None:
@@ -136,11 +170,69 @@ class PriceCache:
         return dates
 
     # -----------------------------
+    # HOURLY HISTORICAL STORAGE
+    # -----------------------------
+    async def save_hourly_history(self, symbol: str, prices: list[float], volumes: list[float], dates: list[str]):
+        """
+        Save full hourly historical prices, volumes, and dates for a symbol.
+        Clears previous data before saving new history.
+        """
+        await self.connect()
+        if len(prices) != len(volumes) or len(prices) != len(dates):
+            raise ValueError("Prices, volumes, and dates must have same length")
+
+        price_key = f"hourly:prices:{symbol}"
+        volume_key = f"hourly:volumes:{symbol}"
+        date_key = f"hourly:dates:{symbol}"
+
+        pipe = self.redis.pipeline()
+        pipe.delete(price_key)
+        pipe.delete(volume_key)
+        pipe.delete(date_key)
+
+        for p, v, d in zip(prices, volumes, dates):
+            pipe.rpush(price_key, p)
+            pipe.rpush(volume_key, v)
+            pipe.rpush(date_key, d)
+
+        await pipe.execute()
+        logger.info(f"Saved {len(prices)} hourly candles for {symbol}")
+
+    async def get_hourly_history(self, symbol: str, limit: int | None = None):
+        """
+        Retrieve full hourly historical prices, volumes, and dates.
+        Optionally return only the last `limit` entries.
+        """
+        await self.connect()
+        prices = [float(x) for x in await self.redis.lrange(f"hourly:prices:{symbol}", 0, -1)]
+        volumes = [float(x) for x in await self.redis.lrange(f"hourly:volumes:{symbol}", 0, -1)]
+        dates = await self.redis.lrange(f"hourly:dates:{symbol}", 0, -1)
+
+        if limit:
+            prices = prices[-limit:]
+            volumes = volumes[-limit:]
+            dates = dates[-limit:]
+
+        return prices, volumes, dates
+
+    async def get_hourly_prices(self, symbol: str, limit: int | None = None) -> list[float]:
+        prices, _, _ = await self.get_hourly_history(symbol, limit=limit)
+        return prices
+
+    async def get_hourly_volumes(self, symbol: str, limit: int | None = None) -> list[float]:
+        _, volumes, _ = await self.get_hourly_history(symbol, limit=limit)
+        return volumes
+
+    async def get_hourly_dates(self, symbol: str, limit: int | None = None) -> list[str]:
+        _, _, dates = await self.get_hourly_history(symbol, limit=limit)
+        return dates
+
+    # -----------------------------
     # Legacy helper methods (needed by trainer & alerts)
     # -----------------------------
     async def get_history(self, symbol: str, limit: int | None = None) -> list[float]:
         """Return historical closing prices for a symbol (legacy method)."""
-        prices, _, _ = await self.get_daily_history(symbol, limit=limit)
+        prices, _, _ = await self.get_hourly_history(symbol, limit=limit)
         return prices
 
     # -----------------------------

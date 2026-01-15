@@ -10,7 +10,8 @@ class ModelRegistry:
     async def load(self):
         async with self.lock:
             self.model = get_predictor("xgb")
-            await self.model.train()
+            if not self.model.load_artifacts():
+                await self.model.train()
             self.ready = True
 
     def get(self):

@@ -47,13 +47,18 @@ class PredictionService:
             return []
 
         # Fetch historical prices and volumes from cache
-        prices, volumes, _ = await price_cache.get_daily_history(symbol)
+        prices, volumes, dates = await price_cache.get_hourly_history(symbol)
         if not prices or not volumes:
             logger.warning(f"No history for {symbol}")
             return []
 
         try:
-            return model.predict(prices=prices, volumes=volumes, steps=steps or self.steps)
+            return model.predict(
+                prices=prices,
+                volumes=volumes,
+                steps=steps or self.steps,
+                dates=dates,
+            )
         except Exception as e:
             logger.error(f"Prediction failed for {symbol}: {e}")
             return []
@@ -80,21 +85,21 @@ class PredictionService:
             return {"dates": [], "prices": [], "high": [], "low": []}
 
         # Get last actual trading date from cache
-        _, _, dates = await price_cache.get_daily_history(symbol)
+        _, _, dates = await price_cache.get_hourly_history(symbol)
         last_date_str = dates[-1]
-        last_date = datetime.strptime(last_date_str, "%Y-%m-%d")
+        last_date = datetime.strptime(last_date_str, "%Y-%m-%d %H:%M")
 
-        # Generate future trading dates, skipping weekends
+        # Generate future hourly timestamps, skipping weekends
         predicted_dates = []
         current_date = last_date
         while len(predicted_dates) < len(preds):
-            current_date += timedelta(days=1)
+            current_date += timedelta(hours=1)
             if current_date.weekday() < 5:  # Mon-Fri only
-                predicted_dates.append(current_date.strftime("%Y-%m-%d"))
+                predicted_dates.append(current_date.strftime("%Y-%m-%d %H:%M"))
 
         # Compute high/low bands based on historical volatility
-        prices, volumes, _ = await price_cache.get_daily_history(symbol)
-        high, low = predictor.predict_high_low(prices, volumes, steps=steps)
+        prices, volumes, dates = await price_cache.get_hourly_history(symbol)
+        high, low = predictor.predict_high_low(prices, volumes, steps=steps, dates=dates)
 
         return {
             "dates": predicted_dates,

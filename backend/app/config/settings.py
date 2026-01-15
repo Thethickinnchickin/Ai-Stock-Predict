@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     FETCH_INTERVAL: int = Field(120, description="Seconds between live price fetches (free tier safe)")
     PREDICT_INTERVAL: int = Field(10, description="Seconds between AI predictions")
     ALERT_INTERVAL: int = Field(15, description="Seconds between alert checks (match fetch interval)")
+    HOURLY_HISTORY_PERIOD: str = Field("60d", description="Period of hourly history to preload")
+    HOURLY_REFRESH_INTERVAL: int = Field(3600, description="Seconds between hourly history refreshes")
+    BACKTEST_RUN_HOUR: int = Field(2, description="Local hour (0-23) to run nightly backtest")
+    BACKTEST_VAL_SIZE: int = Field(200, description="Validation size for backtest")
+    BACKTEST_LOG_PATH: str = Field("logs/backtest.log", description="Relative path for backtest log")
+    MODEL_DIR: str = Field("models", description="Directory for saved model artifacts")
+    MODEL_FILE: str = Field("xgb_model.json", description="XGBoost model filename")
+    SCALER_FILE: str = Field("scaler.joblib", description="Scaler filename")
+    MODEL_META_FILE: str = Field("model_meta.json", description="Model metadata filename")
 
     # Redis
     REDIS_HOST: str = Field("localhost", description="Redis host")

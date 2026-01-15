@@ -1,10 +1,11 @@
 import asyncio
+import os
+from datetime import datetime, timedelta
 from ..utils.logger import log
 from ..services.fetcher import fetch_live_prices_loop, PriceFetcher
 from ..services.alert_service import alert_monitor_loop
 from ..services.prediction_service import PredictionService
 from ..config.settings import settings
-from ..models.predictor import predictor
 from ..models.registry import model_registry
 
 # -----------------------------
@@ -17,20 +18,38 @@ predictor_service = PredictionService()
 # -----------------------------
 async def preload_all_history():
     """
-    Fetches and caches daily historical prices for all symbols
+    Fetches and caches hourly historical prices for all symbols
     listed in settings.SYMBOLS.
     This ensures the model has sufficient data on startup.
     """
     fetcher = PriceFetcher()
-    log.info("📦 Preloading daily history...")
+    log.info("📦 Preloading hourly history...")
 
     for symbol in settings.SYMBOLS:
         try:
-            await fetcher.preload_daily_history(symbol)
+            await fetcher.preload_hourly_history(symbol, period=settings.HOURLY_HISTORY_PERIOD)
         except Exception as e:
             log.error(f"❌ Failed to preload {symbol}: {e}")
 
-    log.info("✅ Daily history preload complete")
+    log.info("✅ Hourly history preload complete")
+
+
+# -----------------------------
+# Periodic hourly history refresh
+# -----------------------------
+async def hourly_history_refresh_loop():
+    """
+    Periodically refreshes hourly historical prices for all symbols.
+    """
+    fetcher = PriceFetcher()
+    while True:
+        try:
+            for symbol in settings.SYMBOLS:
+                await fetcher.preload_hourly_history(symbol, period=settings.HOURLY_HISTORY_PERIOD)
+            await asyncio.sleep(settings.HOURLY_REFRESH_INTERVAL)
+        except Exception as e:
+            log.error(f"Hourly history refresh failed: {e}")
+            await asyncio.sleep(300)
 
 
 # -----------------------------
@@ -53,6 +72,50 @@ async def model_training_loop():
 
 
 # -----------------------------
+# Nightly backtest loop
+# -----------------------------
+async def nightly_backtest_loop():
+    """
+    Runs a backtest once per day at the configured local hour.
+    Logs results to a file for review.
+    """
+    log_path = settings.BACKTEST_LOG_PATH
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+    while True:
+        try:
+            now = datetime.now()
+            run_time = now.replace(hour=settings.BACKTEST_RUN_HOUR, minute=0, second=0, microsecond=0)
+            if run_time <= now:
+                run_time += timedelta(days=1)
+            await asyncio.sleep((run_time - now).total_seconds())
+
+            model = model_registry.get()
+            if not model:
+                await model_registry.load()
+                model = model_registry.get()
+
+            results = await model.backtest(val_size=settings.BACKTEST_VAL_SIZE)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if results:
+                line = (
+                    f"{timestamp} | MAE_model={results['mae_model']:.6f} "
+                    f"MAE_baseline={results['mae_baseline']:.6f} "
+                    f"DirAcc_model={results['directional_accuracy_model']:.3f} "
+                    f"DirAcc_baseline={results['directional_accuracy_baseline']:.3f} "
+                    f"Val={results['validation_size']}\n"
+                )
+            else:
+                line = f"{timestamp} | No backtest results (insufficient data)\n"
+
+            with open(log_path, "a", encoding="utf-8") as handle:
+                handle.write(line)
+        except Exception as e:
+            log.error(f"Nightly backtest failed: {e}")
+            await asyncio.sleep(300)
+
+
+# -----------------------------
 # Start all background tasks
 # -----------------------------
 async def start_background_tasks():
@@ -71,8 +134,10 @@ async def start_background_tasks():
     # Wrap loops in a task wrapper for error handling & automatic restart
     tasks = [
         asyncio.create_task(task_wrapper(fetch_live_prices_loop, "Price Fetcher")),
+        asyncio.create_task(task_wrapper(hourly_history_refresh_loop, "Hourly History Refresh")),
         asyncio.create_task(task_wrapper(model_training_loop, "Model Trainer")),
         asyncio.create_task(task_wrapper(alert_monitor_loop, "Alert Monitor")),
+        asyncio.create_task(task_wrapper(nightly_backtest_loop, "Nightly Backtest")),
     ]
 
     # Run all tasks concurrently and wait for them indefinitely
