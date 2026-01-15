@@ -26,6 +26,34 @@ backend async workflows, data ingestion, and frontend visualization.
 - GraphQL query `predictStock(symbol)` returns actual + predicted series
 - Next.js renders an interactive chart and symbol selector
 
+## Architecture Diagram
+```
+                 +---------------------------+
+                 |        Next.js UI         |
+                 |  /predict, /results, /... |
+                 +-------------+-------------+
+                               |
+                               | HTTPS (Nginx reverse proxy)
+                               v
+                 +---------------------------+
+                 |         FastAPI           |
+                 |  GraphQL + WebSocket API  |
+                 +-------------+-------------+
+                               |
+           +-------------------+-------------------+
+           |                                       |
+           v                                       v
+  +---------------------+               +---------------------+
+  |        Redis        |               |    Data Sources     |
+  | live prices/history |               | Polygon + yfinance  |
+  +---------------------+               +---------------------+
+                               |
+                               v
+                     +---------------------+
+                     |   XGBoost Model     |
+                     | hourly training     |
+                     +---------------------+
+
 ## Tech Stack
 - Backend: FastAPI, Strawberry GraphQL, Redis, asyncio
 - ML: scikit-learn, pandas, numpy
@@ -99,3 +127,38 @@ pytest
 - Add REST endpoints alongside GraphQL for broader client support
 - Improve model evaluation metrics and tracking
 - Persist trained models and add versioning
+
+## Deployment Guide (macOS + Nginx + launchd)
+This project can be deployed locally behind Nginx with HTTPS and a launchd service
+for the backend. Example setup:
+
+1) Backend service (launchd)
+- Ensure your `com.aistock.backend.plist` runs gunicorn/uvicorn from the venv
+- Logs should go to `/tmp/aistock-backend.log` and `/tmp/aistock-backend.err`
+- Start/restart:
+```bash
+launchctl kickstart -k gui/$(id -u)/com.aistock.backend
+```
+
+2) Nginx reverse proxy
+- Terminate TLS on Nginx and proxy to Next.js + FastAPI
+- Ensure `/api/` includes WebSocket upgrade headers
+- Reload after config changes:
+```bash
+sudo nginx -s reload
+```
+
+3) Frontend
+- Run Next.js on `http://127.0.0.1:3000`
+- Backend on `http://127.0.0.1:8000`
+- Nginx serves `https://localhost`
+
+## Explainable ML (Interpretability)
+Current interpretability approach:
+- Feature set includes RSI, MACD, rolling volatility, volume z-score, and market context (SPY/QQQ/VIX)
+- Backtests track MAE and directional accuracy over time
+
+Recommended additions for explainability:
+- Use XGBoost `feature_importances_` to publish top drivers
+- Log feature importances with each nightly backtest
+- Add a small UI panel summarizing the top 5 features
