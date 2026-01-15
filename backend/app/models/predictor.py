@@ -130,8 +130,8 @@ class XGBoostPredictor:
     def _calc_rsi(self, prices, period=14):
         series = pd.Series(prices)
         delta = series.diff().fillna(0)
-        gain = delta.clip(lower=0).rolling(period).mean()
-        loss = (-delta.clip(upper=0)).rolling(period).mean()
+        gain = delta.clip(lower=0).rolling(period, min_periods=1).mean()
+        loss = (-delta.clip(upper=0)).rolling(period, min_periods=1).mean()
         rs = gain / loss.replace(0, np.nan)
         rsi = 100 - (100 / (1 + rs))
         no_movement = (gain == 0) & (loss == 0)
