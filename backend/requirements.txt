@@ -3,6 +3,7 @@ uvicorn[standard]
 strawberry-graphql
 yfinance
 pydantic
+pydantic-settings
 scikit-learn
 pandas
 numpy
